@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use tokio::{
@@ -22,11 +23,21 @@ struct Response {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let log_file = "log.txt";
+
+    // Load messages from file at startup
+    let mut messages = Vec::new();
+    if let Ok(file) = File::open(log_file).await {
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+        while let Some(line) = lines.next_line().await? {
+            messages.push(line);
+        }
+    }
+
+    let log = Arc::new(Mutex::new(messages));
     let listener = TcpListener::bind("127.0.0.1:9000").await?;
     println!("Broker listening on 127.0.0.1:9000");
-
-    // In-memory log messages
-    let log = Arc::new(Mutex::new(Vec::<String>::new()));
 
     loop {
         let (socket, _) = listener.accept().await?;
@@ -44,8 +55,20 @@ async fn main() -> anyhow::Result<()> {
 
                 if req.cmd == "produce" {
                     if let Some(msg) = req.msg {
+                        // Append to in-memory log
                         let mut log = log.lock().await;
-                        log.push(msg);
+                        log.push(msg.clone());
+
+                        // Append to file
+                        let mut file = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&log_file)
+                            .await
+                            .unwrap();
+                        file.write_all(msg.as_bytes()).await.unwrap();
+                        file.write_all(b"\n").await.unwrap();
+
                         let resp = Response {
                             status: "ok".into(),
                             msg: None,
