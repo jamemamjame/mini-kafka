@@ -5,7 +5,10 @@ use tokio::net::TcpStream;
 async fn main() -> anyhow::Result<()> {
     let mut stream = TcpStream::connect("127.0.0.1:9000").await?;
     for i in 0..5 {
-        let msg = format!(r#"{{"cmd":"produce","msg":"hello from producer {}"}}"#, i);
+        let msg = format!(
+            r#"{{"cmd":"produce","topic":"foo","msg":"hello from producer {}"}}"#,
+            i
+        );
         stream.write_all(msg.as_bytes()).await?;
         stream.write_all(b"\n").await?;
 

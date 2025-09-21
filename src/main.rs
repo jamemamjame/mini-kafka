@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
@@ -11,6 +12,7 @@ use tokio::{
 #[derive(Serialize, Deserialize, Debug)]
 struct Request {
     cmd: String,
+    topic: Option<String>,
     msg: Option<String>,
     offset: Option<usize>,
 }
@@ -21,21 +23,13 @@ struct Response {
     msg: Option<String>,
 }
 
+type Log = HashMap<String, Vec<String>>;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let log_file = "log.txt";
+    let log = Log::new();
+    let log = Arc::new(Mutex::new(log));
 
-    // Load messages from file at startup
-    let mut messages = Vec::new();
-    if let Ok(file) = File::open(log_file).await {
-        let reader = BufReader::new(file);
-        let mut lines = reader.lines();
-        while let Some(line) = lines.next_line().await? {
-            messages.push(line);
-        }
-    }
-
-    let log = Arc::new(Mutex::new(messages));
     let listener = TcpListener::bind("127.0.0.1:9000").await?;
     println!("Broker listening on 127.0.0.1:9000");
 
@@ -53,17 +47,34 @@ async fn main() -> anyhow::Result<()> {
                     Err(_) => continue,
                 };
 
+                // Require topic for both produce and consume
+                let topic = match req.topic {
+                    Some(t) => t.clone(),
+                    None => {
+                        let resp = Response {
+                            status: "error".into(),
+                            msg: Some("Missing topic".into()),
+                        };
+                        let resp = serde_json::to_string(&resp).unwrap();
+                        writer.write_all(resp.as_bytes()).await.unwrap();
+                        writer.write_all(b"\n").await.unwrap();
+                        continue;
+                    }
+                };
+
                 if req.cmd == "produce" {
                     if let Some(msg) = req.msg {
                         // Append to in-memory log
                         let mut log = log.lock().await;
-                        log.push(msg.clone());
+                        let entry = log.entry(topic.clone()).or_insert(Vec::new());
+                        entry.push(msg.clone());
 
                         // Append to file
+                        let filename = format!("topic_{}.txt", topic);
                         let mut file = OpenOptions::new()
                             .create(true)
                             .append(true)
-                            .open(&log_file)
+                            .open(&filename)
                             .await
                             .unwrap();
                         file.write_all(msg.as_bytes()).await.unwrap();
@@ -78,16 +89,26 @@ async fn main() -> anyhow::Result<()> {
                         writer.write_all(b"\n").await.unwrap();
                     }
                 } else if req.cmd == "consume" {
-                    let offet = req.offset.unwrap_or(0);
+                    let offset = req.offset.unwrap_or(0);
                     let log = log.lock().await;
-                    if offet < log.len() {
-                        let resp = Response {
-                            status: "ok".into(),
-                            msg: Some(log[offet].clone()),
-                        };
-                        let resp = serde_json::to_string(&resp).unwrap();
-                        writer.write_all(resp.as_bytes()).await.unwrap();
-                        writer.write_all(b"\n").await.unwrap();
+                    if let Some(messages) = log.get(&topic) {
+                        if offset < messages.len() {
+                            let resp = Response {
+                                status: "ok".into(),
+                                msg: Some(messages[offset].clone()),
+                            };
+                            let resp = serde_json::to_string(&resp).unwrap();
+                            writer.write_all(resp.as_bytes()).await.unwrap();
+                            writer.write_all(b"\n").await.unwrap();
+                        } else {
+                            let resp = Response {
+                                status: "end".to_string(),
+                                msg: None,
+                            };
+                            let resp = serde_json::to_string(&resp).unwrap();
+                            writer.write_all(resp.as_bytes()).await.unwrap();
+                            writer.write_all(b"\n").await.unwrap();
+                        }
                     } else {
                         let resp = Response {
                             status: "end".to_string(),
