@@ -4,7 +4,7 @@ use tokio::net::TcpStream;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut stream = TcpStream::connect("127.0.0.1:9000").await?;
-    let msg = r#"{"cmd":"consume","topic":"foo","offset":0}"#;
+    let msg = r#"{"cmd":"consume","topic":"t3","partition":2,"offset":3}"#;
     stream.write_all(msg.as_bytes()).await?;
     stream.write_all(b"\n").await?;
 
