@@ -24,6 +24,7 @@ struct Request {
 struct Response {
     status: String,
     msg: Option<String>,
+    error: Option<String>,
 }
 
 // topic -> partition -> messages
@@ -72,7 +73,17 @@ async fn main() -> anyhow::Result<()> {
             while let Ok(Some(line)) = reader.next_line().await {
                 let req: Request = match serde_json::from_str(&line) {
                     Ok(r) => r,
-                    Err(_) => continue,
+                    Err(e) => {
+                        let resp = Response {
+                            status: "error".into(),
+                            msg: None,
+                            error: Some(format!("Invalid JSON: {}", e)),
+                        };
+                        let resp = serde_json::to_string(&resp).unwrap();
+                        writer.write_all(resp.as_bytes()).await.unwrap();
+                        writer.write_all(b"\n").await.unwrap();
+                        continue;
+                    }
                 };
 
                 // Require topic for both produce and consume
@@ -81,7 +92,8 @@ async fn main() -> anyhow::Result<()> {
                     None => {
                         let resp = Response {
                             status: "error".into(),
-                            msg: Some("Missing topic".into()),
+                            msg: None,
+                            error: Some("Missing topic".into()),
                         };
                         let resp = serde_json::to_string(&resp).unwrap();
                         writer.write_all(resp.as_bytes()).await.unwrap();
@@ -92,32 +104,70 @@ async fn main() -> anyhow::Result<()> {
                 let partition = req.partition.unwrap_or(0);
 
                 if req.cmd == "produce" {
-                    if let Some(msg) = req.msg {
-                        // Append to in-memory log
-                        let mut log = log.lock().await;
-                        let topic_entry = log.entry(topic.clone()).or_insert(HashMap::new());
-                        let part_entry = topic_entry.entry(partition).or_insert(Vec::new());
-                        part_entry.push(msg.clone());
+                    let msg = match req.msg {
+                        Some(m) => m.clone(),
+                        None => {
+                            let resp = Response {
+                                status: "error".into(),
+                                msg: None,
+                                error: Some("Missing message".into()),
+                            };
+                            let resp = serde_json::to_string(&resp).unwrap();
+                            writer.write_all(resp.as_bytes()).await.ok();
+                            writer.write_all(b"\n").await.ok();
+                            continue;
+                        }
+                    };
 
-                        // Append to file
-                        let filename = format!("topic_{}_part_{}.txt", topic, partition);
-                        let mut file = OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&filename)
-                            .await
-                            .unwrap();
-                        file.write_all(msg.as_bytes()).await.unwrap();
-                        file.write_all(b"\n").await.unwrap();
+                    // Append to in-memory log
+                    let mut log = log.lock().await;
+                    let topic_entry = log.entry(topic.clone()).or_insert_with(HashMap::new);
+                    let part_entry = topic_entry.entry(partition).or_insert_with(Vec::new);
+                    part_entry.push(msg.clone());
 
-                        let resp = Response {
-                            status: "ok".into(),
-                            msg: None,
-                        };
-                        let resp = serde_json::to_string(&resp).unwrap();
-                        writer.write_all(resp.as_bytes()).await.unwrap();
-                        writer.write_all(b"\n").await.unwrap();
+                    // Append to file for this topic/partition
+                    let filename = format!("topic_{}_part_{}.txt", topic, partition);
+                    match OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&filename)
+                        .await
+                    {
+                        Ok(mut file) => {
+                            if let Err(e) = file.write_all(msg.as_bytes()).await {
+                                let resp = Response {
+                                    status: "error".into(),
+                                    msg: None,
+                                    error: Some(format!("File write error: {}", e)),
+                                };
+                                let resp = serde_json::to_string(&resp).unwrap();
+                                writer.write_all(resp.as_bytes()).await.ok();
+                                writer.write_all(b"\n").await.ok();
+                                continue;
+                            }
+                            file.write_all(b"\n").await.ok();
+                        }
+                        Err(e) => {
+                            let resp = Response {
+                                status: "error".into(),
+                                msg: None,
+                                error: Some(format!("File open error: {}", e)),
+                            };
+                            let resp = serde_json::to_string(&resp).unwrap();
+                            writer.write_all(resp.as_bytes()).await.ok();
+                            writer.write_all(b"\n").await.ok();
+                            continue;
+                        }
                     }
+
+                    let resp = Response {
+                        status: "ok".into(),
+                        msg: None,
+                        error: None,
+                    };
+                    let resp = serde_json::to_string(&resp).unwrap();
+                    writer.write_all(resp.as_bytes()).await.ok();
+                    writer.write_all(b"\n").await.ok();
                 } else if req.cmd == "consume" {
                     let offset = req.offset.unwrap_or(0);
                     let log = log.lock().await;
@@ -127,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
                                 let resp = Response {
                                     status: "ok".into(),
                                     msg: Some(messages[offset].clone()),
+                                    error: None,
                                 };
                                 let resp = serde_json::to_string(&resp).unwrap();
                                 writer.write_all(resp.as_bytes()).await.unwrap();
@@ -135,6 +186,11 @@ async fn main() -> anyhow::Result<()> {
                                 let resp = Response {
                                     status: "end".to_string(),
                                     msg: None,
+                                    error: Some(format!(
+                                        "Offset {} out of range. Max offset: {}",
+                                        offset,
+                                        messages.len().saturating_sub(1)
+                                    )),
                                 };
                                 let resp = serde_json::to_string(&resp).unwrap();
                                 writer.write_all(resp.as_bytes()).await.unwrap();
@@ -142,8 +198,9 @@ async fn main() -> anyhow::Result<()> {
                             }
                         } else {
                             let resp = Response {
-                                status: "end".to_string(),
+                                status: "error".to_string(),
                                 msg: None,
+                                error: Some(format!("Partition {} not found", partition)),
                             };
                             let resp = serde_json::to_string(&resp).unwrap();
                             writer.write_all(resp.as_bytes()).await.unwrap();
@@ -151,13 +208,23 @@ async fn main() -> anyhow::Result<()> {
                         }
                     } else {
                         let resp = Response {
-                            status: "end".to_string(),
+                            status: "error".to_string(),
                             msg: None,
+                            error: Some(format!("Topic '{}' not found", topic)),
                         };
                         let resp = serde_json::to_string(&resp).unwrap();
                         writer.write_all(resp.as_bytes()).await.unwrap();
                         writer.write_all(b"\n").await.unwrap();
                     }
+                } else {
+                    let resp = Response {
+                        status: "error".to_string(),
+                        msg: None,
+                        error: Some(format!("Unknown command: {}", req.cmd)),
+                    };
+                    let resp = serde_json::to_string(&resp).unwrap();
+                    writer.write_all(resp.as_bytes()).await.ok();
+                    writer.write_all(b"\n").await.ok();
                 }
             }
         });
