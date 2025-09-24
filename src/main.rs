@@ -8,6 +8,7 @@ use tokio::{
 };
 
 mod broker;
+mod command;
 mod protocol;
 mod storage;
 
