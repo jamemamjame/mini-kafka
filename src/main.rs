@@ -1,4 +1,11 @@
+mod broker;
+mod command;
+mod error;
+mod protocol;
+mod storage;
+
 use crate::broker::Broker;
+use crate::error::BrokerError;
 use crate::protocol::{Request, Response};
 use crate::storage::load_log;
 use tokio::io::AsyncWriteExt;
@@ -7,20 +14,20 @@ use tokio::{
     net::TcpListener,
 };
 
-mod broker;
-mod command;
-mod protocol;
-mod storage;
-
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), BrokerError> {
     let (log, max_id) = load_log().await?;
     let broker = Broker::new(log, max_id + 1);
-    let listener = TcpListener::bind("127.0.0.1:9000").await?;
+    let listener = TcpListener::bind("127.0.0.1:9000")
+        .await
+        .map_err(|e| BrokerError::IoError(format!("Failed to bind: {}", e)))?;
     println!("Broker listening on 127.0.0.1:9000");
 
     loop {
-        let (socket, _) = listener.accept().await?;
+        let (socket, _) = listener
+            .accept()
+            .await
+            .map_err(|e| BrokerError::IoError(format!("Failed to accept: {}", e)))?;
         let broker = broker.clone();
 
         tokio::spawn(async move {

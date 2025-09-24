@@ -1,5 +1,6 @@
 use super::Command;
 use crate::broker::Broker;
+use crate::error::BrokerError;
 use crate::protocol::{Message, Request, Response};
 use crate::storage::append_message;
 use async_trait::async_trait;
@@ -12,31 +13,10 @@ pub struct ProduceCommand {
 
 #[async_trait]
 impl Command for ProduceCommand {
-    async fn execute(&self, broker: &Broker) -> Response {
-        let topic = match &self.req.topic {
-            Some(t) => t.clone(),
-            None => {
-                return Response {
-                    status: "error".to_string(),
-                    msg: None,
-                    error: Some("Missing topic".to_string()),
-                    next_offset: None,
-                }
-            }
-        };
+    async fn execute(&self, broker: &Broker) -> Result<Response, BrokerError> {
+        let topic = self.req.topic.clone().ok_or(BrokerError::MissingTopic)?;
         let partition = self.req.partition.unwrap_or(0);
-
-        let value = match &self.req.msg {
-            Some(m) => m.clone(),
-            None => {
-                return Response {
-                    status: "error".to_string(),
-                    msg: None,
-                    error: Some("Missing message".to_string()),
-                    next_offset: None,
-                }
-            }
-        };
+        let value = self.req.msg.clone().ok_or(BrokerError::MissingMessage)?;
 
         // Generate message metadata
         let mut id_counter = broker.id_counter.lock().await;
@@ -59,20 +39,13 @@ impl Command for ProduceCommand {
         let part_entry = topic_entry.entry(partition).or_insert_with(Vec::new);
         part_entry.push(message.clone());
 
-        if let Err(e) = append_message(&topic, partition, &message).await {
-            return Response {
-                status: "error".to_string(),
-                msg: None,
-                error: Some(format!("File write error: {}", e)),
-                next_offset: None,
-            };
-        }
+        append_message(&topic, partition, &message).await?;
 
-        Response {
+        Ok(Response {
             status: "ok".to_string(),
             msg: Some(message),
             error: None,
             next_offset: None,
-        }
+        })
     }
 }

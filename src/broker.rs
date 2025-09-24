@@ -1,4 +1,5 @@
 use crate::command::{Command, ConsumeCommand, ProduceCommand};
+use crate::error::BrokerError;
 use crate::protocol::{Request, Response};
 use crate::storage::Log;
 use std::sync::Arc;
@@ -19,7 +20,7 @@ impl Broker {
     }
 
     pub async fn handle_request(&self, req: Request) -> Response {
-        match req.cmd.as_str() {
+        let result = match req.cmd.as_str() {
             "produce" => {
                 let cmd = ProduceCommand { req };
                 cmd.execute(self).await
@@ -28,10 +29,15 @@ impl Broker {
                 let cmd = ConsumeCommand { req };
                 cmd.execute(self).await
             }
-            _ => Response {
+            _ => Err(BrokerError::InvalidCommand(req.cmd)),
+        };
+
+        match result {
+            Ok(resp) => resp,
+            Err(e) => Response {
                 status: "error".to_string(),
                 msg: None,
-                error: Some(format!("Unknown command: {}", req.cmd)),
+                error: Some(e.to_string()),
                 next_offset: None,
             },
         }
