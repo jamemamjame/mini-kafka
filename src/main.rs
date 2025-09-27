@@ -1,5 +1,6 @@
 mod broker;
 mod command;
+mod config;
 mod error;
 mod protocol;
 mod storage;
@@ -8,7 +9,8 @@ use crate::broker::Broker;
 use crate::error::BrokerError;
 use crate::protocol::{Request, Response};
 use crate::storage::load_log;
-use log::{info, warn, debug};
+use log::{debug, info, warn};
+use std::env;
 use tokio::io::AsyncWriteExt;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -18,14 +20,23 @@ use tokio::{
 #[tokio::main]
 async fn main() -> Result<(), BrokerError> {
     env_logger::init();
-    info!("Starting mini-kafka broker...");
 
+    let config = config::BrokerConfig::from_file("broker_config.json")
+        .map_err(|e| BrokerError::IoError(format!("Config error: {}", e)))?;
+    info!("Loaded config: {:?}", config);
+
+    let broker_id: usize = env::var("BROKER_ID")
+        .expect("BROKER_ID env variable not set")
+        .parse()
+        .expect("BROKER_ID must be a valid integer");
+
+    let my_addr = &config.brokers[broker_id];
     let (log, max_id) = load_log().await?;
     let broker = Broker::new(log, max_id + 1);
-    let listener = TcpListener::bind("127.0.0.1:9000")
+    let listener = TcpListener::bind(my_addr)
         .await
         .map_err(|e| BrokerError::IoError(format!("Failed to bind: {}", e)))?;
-    info!("Broker listening on 127.0.0.1:9000");
+    info!("Broker listening on {}", my_addr);
 
     loop {
         let (socket, addr) = listener

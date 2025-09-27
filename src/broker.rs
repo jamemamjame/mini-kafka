@@ -2,7 +2,7 @@ use crate::command::{Command, ConsumeCommand, ProduceCommand};
 use crate::error::BrokerError;
 use crate::protocol::{Request, Response};
 use crate::storage::Log;
-use log::{info, error};
+use log::{error, info};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
