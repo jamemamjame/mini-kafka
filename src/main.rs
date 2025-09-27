@@ -30,9 +30,18 @@ async fn main() -> Result<(), BrokerError> {
         .parse()
         .expect("BROKER_ID must be a valid integer");
 
+    let data_dir = &config.data_dirs[broker_id];
+    std::fs::create_dir_all(data_dir)?; // Ensure all directory exists
+
     let my_addr = &config.brokers[broker_id];
-    let (log, max_id) = load_log().await?;
-    let broker = Broker::new(log, max_id + 1);
+    let (log, max_id) = load_log(data_dir).await?;
+    let broker = Broker::new(
+        log,
+        max_id + 1,
+        config.brokers.clone(),
+        broker_id,
+        data_dir.to_string(),
+    );
     let listener = TcpListener::bind(my_addr)
         .await
         .map_err(|e| BrokerError::IoError(format!("Failed to bind: {}", e)))?;

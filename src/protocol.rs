@@ -9,11 +9,13 @@ pub struct Message {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Request {
-    pub cmd: String,
+    pub cmd: String, // "produce", "consume", "replicate"
     pub topic: Option<String>,
     pub partition: Option<u32>,
     pub msg: Option<String>,
     pub offset: Option<usize>,
+    // For broker comunication
+    pub message: Option<Message>, // For replication
 }
 
 #[derive(Serialize, Deserialize, Debug)]

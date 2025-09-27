@@ -25,5 +25,7 @@ target
 
 /target
 
+# Ignore log files and data directories
 log.txt
 topic_*.txt
+data/

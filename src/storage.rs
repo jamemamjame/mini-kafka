@@ -9,10 +9,10 @@ pub type Log = HashMap<String, HashMap<u32, Vec<Message>>>;
 
 /// Loads all messages from disk into memory.
 /// Returns the log and the highest message ID found.
-pub async fn load_log() -> Result<(Log, u64), BrokerError> {
+pub async fn load_log(data_dir: &str) -> Result<(Log, u64), BrokerError> {
     let mut log: Log = HashMap::new();
     let re = Regex::new(r"^topic_(.+)_part_(\d+)\.txt$")?;
-    let mut dir = fs::read_dir(".").await?;
+    let mut dir = fs::read_dir(data_dir).await?;
     let mut max_id = 0u64;
 
     while let Some(entry) = dir
@@ -51,11 +51,12 @@ pub async fn load_log() -> Result<(Log, u64), BrokerError> {
 
 /// Appends a message to the appropriate file.
 pub async fn append_message(
+    data_dir: &str,
     topic: &str,
     partition: u32,
     message: &Message,
 ) -> Result<(), BrokerError> {
-    let filename = format!("topic_{}_part_{}.txt", topic, partition);
+    let filename = format!("{}/topic_{}_part_{}.txt", data_dir, topic, partition);
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)

@@ -17,10 +17,14 @@ cd mini-kafka
 cargo build
 ```
 
+Then, open multiple terminal tabs for each step below.
+
 2. Run the Broker
 ```
-cargo run --bin mini-kafka
+RUST_LOG=info BROKER_ID=0 cargo run --bin mini-kafka
 ```
+- Each broker instance should have a unique `BROKER_ID` (0, 1, 2, ...).
+- Program will read configuration from `broker_config.json`.
 
 3. Produce Messages
 ```

@@ -1,4 +1,4 @@
-use crate::command::{Command, ConsumeCommand, ProduceCommand};
+use crate::command::{Command, ConsumeCommand, ProduceCommand, ReplicateCommand};
 use crate::error::BrokerError;
 use crate::protocol::{Request, Response};
 use crate::storage::Log;
@@ -10,13 +10,25 @@ use tokio::sync::Mutex;
 pub struct Broker {
     pub log: Arc<Mutex<Log>>,
     pub id_counter: Arc<Mutex<u64>>,
+    pub cluster_brokers: Vec<String>,
+    pub my_id: usize,
+    pub data_dir: String,
 }
 
 impl Broker {
-    pub fn new(log: Log, id_counter: u64) -> Self {
+    pub fn new(
+        log: Log,
+        id_counter: u64,
+        cluster_brokers: Vec<String>,
+        my_id: usize,
+        data_dir: String,
+    ) -> Self {
         Self {
             log: Arc::new(Mutex::new(log)),
             id_counter: Arc::new(Mutex::new(id_counter)),
+            cluster_brokers,
+            my_id,
+            data_dir,
         }
     }
 
@@ -29,6 +41,10 @@ impl Broker {
             }
             "consume" => {
                 let cmd = ConsumeCommand { req };
+                cmd.execute(self).await
+            }
+            "replicate" => {
+                let cmd = ReplicateCommand { req };
                 cmd.execute(self).await
             }
             _ => Err(BrokerError::InvalidCommand(req.cmd)),

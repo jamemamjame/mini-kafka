@@ -4,6 +4,7 @@ use std::fs;
 #[derive(Debug, Deserialize, Clone)]
 pub struct BrokerConfig {
     pub brokers: Vec<String>,
+    pub data_dirs: Vec<String>,
 }
 
 impl BrokerConfig {
