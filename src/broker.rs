@@ -66,4 +66,17 @@ impl Broker {
             }
         }
     }
+
+    pub fn is_leader(&self, partition: u32) -> bool {
+        self.get_leader_id(partition) == self.my_id
+    }
+
+    pub fn get_leader_id(&self, partition: u32) -> usize {
+        partition as usize % self.cluster_brokers.len()
+    }
+
+    pub fn get_leader_addr_by_partition(&self, partition: u32) -> &str {
+        let leader_id = self.get_leader_id(partition);
+        &self.cluster_brokers[leader_id]
+    }
 }
