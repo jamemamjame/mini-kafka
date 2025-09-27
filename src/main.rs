@@ -8,6 +8,7 @@ use crate::broker::Broker;
 use crate::error::BrokerError;
 use crate::protocol::{Request, Response};
 use crate::storage::load_log;
+use log::{info, warn, debug};
 use tokio::io::AsyncWriteExt;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -16,18 +17,22 @@ use tokio::{
 
 #[tokio::main]
 async fn main() -> Result<(), BrokerError> {
+    env_logger::init();
+    info!("Starting mini-kafka broker...");
+
     let (log, max_id) = load_log().await?;
     let broker = Broker::new(log, max_id + 1);
     let listener = TcpListener::bind("127.0.0.1:9000")
         .await
         .map_err(|e| BrokerError::IoError(format!("Failed to bind: {}", e)))?;
-    println!("Broker listening on 127.0.0.1:9000");
+    info!("Broker listening on 127.0.0.1:9000");
 
     loop {
-        let (socket, _) = listener
+        let (socket, addr) = listener
             .accept()
             .await
             .map_err(|e| BrokerError::IoError(format!("Failed to accept: {}", e)))?;
+        info!("Accepted connection from {}", addr);
         let broker = broker.clone();
 
         tokio::spawn(async move {
@@ -35,9 +40,11 @@ async fn main() -> Result<(), BrokerError> {
             let mut reader = BufReader::new(reader).lines();
 
             while let Ok(Some(line)) = reader.next_line().await {
+                debug!("Received line: {}", line);
                 let req: Request = match serde_json::from_str(&line) {
                     Ok(r) => r,
                     Err(e) => {
+                        warn!("Invalid JSON received: {}", e);
                         let resp = Response {
                             status: "error".to_string(),
                             msg: None,

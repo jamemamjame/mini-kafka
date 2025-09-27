@@ -2,6 +2,7 @@ use crate::command::{Command, ConsumeCommand, ProduceCommand};
 use crate::error::BrokerError;
 use crate::protocol::{Request, Response};
 use crate::storage::Log;
+use log::{info, error};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -20,6 +21,7 @@ impl Broker {
     }
 
     pub async fn handle_request(&self, req: Request) -> Response {
+        info!("Processing {} command", req.cmd);
         let result = match req.cmd.as_str() {
             "produce" => {
                 let cmd = ProduceCommand { req };
@@ -33,13 +35,19 @@ impl Broker {
         };
 
         match result {
-            Ok(resp) => resp,
-            Err(e) => Response {
-                status: "error".to_string(),
-                msg: None,
-                error: Some(e.to_string()),
-                next_offset: None,
-            },
+            Ok(resp) => {
+                info!("Command completed successfully");
+                resp
+            }
+            Err(e) => {
+                error!("Command failed: {}", e);
+                Response {
+                    status: "error".to_string(),
+                    msg: None,
+                    error: Some(e.to_string()),
+                    next_offset: None,
+                }
+            }
         }
     }
 }
