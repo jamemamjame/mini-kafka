@@ -42,14 +42,17 @@ impl Broker {
     }
 
     pub fn start_raft(self: Arc<Self>) {
-        // Election timer
-        let broker_clone = self.clone();
+        self.clone().start_election_timer();
+        self.clone().start_heartbeat_sender();
+    }
+
+    pub fn start_election_timer(self: Arc<Self>) {
         tokio::spawn(async move {
             loop {
                 let timeout = rand::rng().random_range(1000..=5000); // NOTE: use high timeout value for easier debugging.
                 sleep(Duration::from_millis(timeout)).await;
 
-                let mut raft = broker_clone.raft_state.lock().await;
+                let mut raft = self.raft_state.lock().await;
                 let elapsed = raft.last_heartbeat.elapsed();
                 if raft.role == RaftRole::Leader {
                     continue; // Leader doesn't start elections
@@ -62,22 +65,22 @@ impl Broker {
                 // If no heartbeat received, start election
                 raft.role = RaftRole::Candidate;
                 raft.current_term += 1;
-                raft.voted_for = Some(broker_clone.my_id);
+                raft.voted_for = Some(self.my_id);
                 let current_term: u64 = raft.current_term;
                 drop(raft); // Release lock before network ops
 
                 // Send RequestVote RPCs to all other brokers
                 let mut votes = 1; // Vote for self
-                let num_brokers = broker_clone.cluster_brokers.len();
+                let num_brokers = self.cluster_brokers.len();
                 let last_log_index = 0; // Simplified for now
                 let last_log_term = 0; // Simplified for now
-                for (i, addr) in broker_clone.cluster_brokers.iter().enumerate() {
-                    if i == broker_clone.my_id {
+                for (i, addr) in self.cluster_brokers.iter().enumerate() {
+                    if i == self.my_id {
                         continue;
                     }
                     let args = RequestVoteArgs {
                         term: current_term,
-                        candidate_id: broker_clone.my_id,
+                        candidate_id: self.my_id,
                         last_log_index,
                         last_log_term,
                     };
@@ -90,31 +93,31 @@ impl Broker {
 
                 // If majority, become leader
                 if votes > num_brokers / 2 {
-                    let mut raft = broker_clone.raft_state.lock().await;
+                    let mut raft = self.raft_state.lock().await;
                     raft.role = RaftRole::Leader;
                     info!(
                         "Broker {} became leader for term {}",
-                        broker_clone.my_id, raft.current_term
+                        self.my_id, raft.current_term
                     );
                 }
             }
         });
+    }
 
-        // Heartbeat sender
-        let broker_clone = self.clone();
+    pub fn start_heartbeat_sender(self: Arc<Self>) {
         tokio::spawn(async move {
             use tokio::time::{sleep, Duration};
             loop {
                 sleep(Duration::from_millis(50)).await;
-                let raft = broker_clone.raft_state.lock().await;
+                let raft = self.raft_state.lock().await;
                 if raft.role != RaftRole::Leader {
                     continue; // Only leader sends heartbeats
                 }
                 let term = raft.current_term;
                 drop(raft);
 
-                let brokers = broker_clone.cluster_brokers.clone();
-                let my_id = broker_clone.my_id;
+                let brokers = self.cluster_brokers.clone();
+                let my_id = self.my_id;
 
                 for (i, addr) in brokers.iter().enumerate() {
                     if i == my_id {
