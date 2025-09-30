@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
 
 pub type BrokerId = usize;
@@ -23,6 +25,7 @@ pub struct RaftState {
     pub log: Vec<LogEntry>,
     pub commit_index: u64,
     pub last_applied: u64,
+    pub last_heartbeat: Instant,
 }
 
 impl RaftState {
@@ -34,6 +37,7 @@ impl RaftState {
             log: vec![],
             commit_index: 0,
             last_applied: 0,
+            last_heartbeat: Instant::now(),
         }
     }
 }
@@ -50,4 +54,21 @@ pub struct RequestVoteArgs {
 pub struct RequestVoteReply {
     pub term: u64,
     pub vote_granted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppendEntriesArgs {
+    pub term: u64,
+    pub leader_id: BrokerId,
+    // For heartbeats, entries can be empty
+    pub prev_log_index: u64,
+    pub prev_log_term: u64,
+    pub entries: Vec<LogEntry>,
+    pub leader_commit: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppendEntriesReply {
+    pub term: u64,
+    pub success: bool,
 }

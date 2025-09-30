@@ -1,11 +1,17 @@
 use crate::command::{Command, ConsumeCommand, ProduceCommand, ReplicateCommand};
 use crate::error::BrokerError;
 use crate::protocol::{Request, Response};
-use crate::raft::{RaftRole, RaftState, RequestVoteArgs, RequestVoteReply};
+use crate::raft::{
+    AppendEntriesArgs, AppendEntriesReply, RaftRole, RaftState, RequestVoteArgs, RequestVoteReply,
+};
 use crate::storage::Log;
 use log::{debug, error, info};
+use rand::Rng;
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Clone)]
 pub struct Broker {
@@ -35,39 +41,43 @@ impl Broker {
         }
     }
 
-    pub fn start_raft_election_timer(self: Arc<Self>) {
+    pub fn start_raft(self: Arc<Self>) {
+        // Election timer
+        let broker_clone = self.clone();
         tokio::spawn(async move {
-            use rand::Rng;
-            use tokio::time::{sleep, Duration};
-
             loop {
-                let timeout = rand::rng().random_range(150..=300);
+                let timeout = rand::rng().random_range(1000..=5000); // NOTE: use high timeout value for easier debugging.
                 sleep(Duration::from_millis(timeout)).await;
 
-                let mut raft = self.raft_state.lock().await;
+                let mut raft = broker_clone.raft_state.lock().await;
+                let elapsed = raft.last_heartbeat.elapsed();
                 if raft.role == RaftRole::Leader {
                     continue; // Leader doesn't start elections
+                }
+                if elapsed < Duration::from_millis(timeout) {
+                    debug!("Heartbeat received, don't start election");
+                    continue; // Heartbeat received, don't start election
                 }
 
                 // If no heartbeat received, start election
                 raft.role = RaftRole::Candidate;
                 raft.current_term += 1;
-                raft.voted_for = Some(self.my_id);
+                raft.voted_for = Some(broker_clone.my_id);
                 let current_term: u64 = raft.current_term;
                 drop(raft); // Release lock before network ops
 
                 // Send RequestVote RPCs to all other brokers
                 let mut votes = 1; // Vote for self
-                let num_brokers = self.cluster_brokers.len();
+                let num_brokers = broker_clone.cluster_brokers.len();
                 let last_log_index = 0; // Simplified for now
                 let last_log_term = 0; // Simplified for now
-                for (i, addr) in self.cluster_brokers.iter().enumerate() {
-                    if i == self.my_id {
+                for (i, addr) in broker_clone.cluster_brokers.iter().enumerate() {
+                    if i == broker_clone.my_id {
                         continue;
                     }
                     let args = RequestVoteArgs {
                         term: current_term,
-                        candidate_id: self.my_id,
+                        candidate_id: broker_clone.my_id,
                         last_log_index,
                         last_log_term,
                     };
@@ -80,12 +90,49 @@ impl Broker {
 
                 // If majority, become leader
                 if votes > num_brokers / 2 {
-                    let mut raft = self.raft_state.lock().await;
+                    let mut raft = broker_clone.raft_state.lock().await;
                     raft.role = RaftRole::Leader;
                     info!(
                         "Broker {} became leader for term {}",
-                        self.my_id, raft.current_term
+                        broker_clone.my_id, raft.current_term
                     );
+                }
+            }
+        });
+
+        // Heartbeat sender
+        let broker_clone = self.clone();
+        tokio::spawn(async move {
+            use tokio::time::{sleep, Duration};
+            loop {
+                sleep(Duration::from_millis(50)).await;
+                let raft = broker_clone.raft_state.lock().await;
+                if raft.role != RaftRole::Leader {
+                    continue; // Only leader sends heartbeats
+                }
+                let term = raft.current_term;
+                drop(raft);
+
+                let brokers = broker_clone.cluster_brokers.clone();
+                let my_id = broker_clone.my_id;
+
+                for (i, addr) in brokers.iter().enumerate() {
+                    if i == my_id {
+                        continue;
+                    }
+                    let args = AppendEntriesArgs {
+                        term,
+                        leader_id: my_id,
+                        prev_log_index: 0,
+                        prev_log_term: 0,
+                        entries: vec![],
+                        leader_commit: 0,
+                    };
+                    let addr = addr.clone();
+                    // Fire and forget
+                    tokio::spawn(async move {
+                        let _ = send_append_entries(&addr, &args).await;
+                    });
                 }
             }
         });
@@ -145,9 +192,6 @@ async fn send_request_vote(
     addr: &str,
     args: &RequestVoteArgs,
 ) -> Result<RequestVoteReply, std::io::Error> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::TcpStream;
-
     let mut stream = TcpStream::connect(addr).await?;
     let msg = serde_json::to_string(&("RequestVote", args))?;
     stream.write_all(msg.as_bytes()).await?;
@@ -156,6 +200,25 @@ async fn send_request_vote(
     let mut reader = BufReader::new(stream).lines();
     if let Some(line) = reader.next_line().await? {
         let reply: RequestVoteReply = serde_json::from_str(&line)?;
+        Ok(reply)
+    } else {
+        Err(std::io::Error::new(std::io::ErrorKind::Other, "No reply"))
+    }
+}
+
+// Helper function to send AppendEntries RPC
+async fn send_append_entries(
+    addr: &str,
+    args: &AppendEntriesArgs,
+) -> Result<AppendEntriesReply, std::io::Error> {
+    let mut stream = TcpStream::connect(addr).await?;
+    let msg = serde_json::to_string(&("AppendEntries", args))?;
+    stream.write_all(msg.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+
+    let mut reader = BufReader::new(stream).lines();
+    if let Some(line) = reader.next_line().await? {
+        let reply: AppendEntriesReply = serde_json::from_str(&line)?;
         Ok(reply)
     } else {
         Err(std::io::Error::new(std::io::ErrorKind::Other, "No reply"))

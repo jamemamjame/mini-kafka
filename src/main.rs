@@ -9,7 +9,9 @@ mod storage;
 use crate::broker::Broker;
 use crate::error::BrokerError;
 use crate::protocol::{Request, Response};
-use crate::raft::{RaftRole, RequestVoteArgs, RequestVoteReply};
+use crate::raft::{
+    AppendEntriesArgs, AppendEntriesReply, RaftRole, RequestVoteArgs, RequestVoteReply,
+};
 use crate::storage::load_log;
 use log::{debug, info, warn};
 use std::env;
@@ -47,7 +49,7 @@ async fn main() -> Result<(), BrokerError> {
     );
     // Start the Raft election timer/task!
     let broker_arc = Arc::new(broker);
-    broker_arc.clone().start_raft_election_timer();
+    broker_arc.clone().start_raft();
 
     let listener = TcpListener::bind(my_addr)
         .await
@@ -97,6 +99,40 @@ async fn main() -> Result<(), BrokerError> {
                     };
                     if let Err(e) = writer.write_all(reply_json.as_bytes()).await {
                         warn!("Failed to write reply: {}", e);
+                        continue;
+                    }
+                    if let Err(e) = writer.write_all(b"\n").await {
+                        warn!("Failed to write newline: {}", e);
+                        continue;
+                    }
+                    continue;
+                }
+
+                // Handle Raft Heartbeats
+                if let Ok(("AppendEntries", args)) =
+                    serde_json::from_str::<(&str, AppendEntriesArgs)>(&line)
+                {
+                    let mut raft = broker.raft_state.lock().await;
+                    let mut success = false;
+                    if args.term >= raft.current_term {
+                        raft.current_term = args.term;
+                        raft.role = RaftRole::Follower;
+                        raft.last_heartbeat = std::time::Instant::now(); // reset
+                        success = true;
+                    };
+                    let reply = AppendEntriesReply {
+                        term: raft.current_term,
+                        success,
+                    };
+                    let reply_json = match serde_json::to_string(&reply) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            warn!("Failed to serialize AppendEntriesReply: {}", e);
+                            continue;
+                        }
+                    };
+                    if let Err(e) = writer.write_all(reply_json.as_bytes()).await {
+                        warn!("Failed to write AppendEntriesReply: {}", e);
                         continue;
                     }
                     if let Err(e) = writer.write_all(b"\n").await {
