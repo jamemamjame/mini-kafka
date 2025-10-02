@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-use serde::{Deserialize, Serialize};
+use crate::protocol::Message;
 
 pub type BrokerId = usize;
 
@@ -14,7 +15,7 @@ pub enum RaftRole {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
     pub term: u64,
-    pub command: String,
+    pub message: Message,
 }
 
 #[derive(Debug, Clone)]

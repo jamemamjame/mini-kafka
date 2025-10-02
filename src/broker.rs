@@ -1,8 +1,9 @@
-use crate::command::{Command, ConsumeCommand, ProduceCommand, ReplicateCommand};
+use crate::command::{Command, ConsumeCommand, ProduceCommand};
 use crate::error::BrokerError;
 use crate::protocol::{Request, Response};
 use crate::raft::{
-    AppendEntriesArgs, AppendEntriesReply, RaftRole, RaftState, RequestVoteArgs, RequestVoteReply,
+    AppendEntriesArgs, AppendEntriesReply, LogEntry, RaftRole, RaftState, RequestVoteArgs,
+    RequestVoteReply,
 };
 use crate::storage::Log;
 use log::{debug, error, info};
@@ -152,10 +153,6 @@ impl Broker {
                 let cmd = ConsumeCommand { req };
                 cmd.execute(self).await
             }
-            "replicate" => {
-                let cmd = ReplicateCommand { req };
-                cmd.execute(self).await
-            }
             _ => Err(BrokerError::InvalidCommand(req.cmd)),
         };
 
@@ -187,6 +184,51 @@ impl Broker {
     pub fn get_leader_addr_by_partition(&self, partition: u32) -> &str {
         let leader_id = self.get_leader_id(partition);
         &self.cluster_brokers[leader_id]
+    }
+
+    // Call this when handling a produce request as leader
+    pub async fn replicate_log_entry(&self, entry: LogEntry) {
+        // Append to own log
+        {
+            let mut raft = self.raft_state.lock().await;
+            raft.log.push(entry.clone());
+        }
+
+        // Replicate to followers
+        let brokers = self.cluster_brokers.clone();
+        let raft = self.raft_state.lock().await;
+        let term = raft.current_term;
+        let my_id = self.my_id;
+        let log_len = raft.log.len() as u64;
+        let prev_log_index = if log_len == 0 { 0 } else { log_len - 1 };
+        let prev_log_term = if prev_log_index < log_len {
+            raft.log
+                .get(prev_log_index as usize)
+                .map(|e| e.term)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let leader_commit = raft.commit_index;
+        drop(raft);
+
+        for (i, addr) in brokers.iter().enumerate() {
+            if i == self.my_id {
+                continue;
+            }
+            let args = AppendEntriesArgs {
+                term,
+                leader_id: my_id,
+                prev_log_index,
+                prev_log_term,
+                entries: vec![entry.clone()],
+                leader_commit,
+            };
+            let addr = addr.clone();
+            tokio::spawn(async move {
+                let _ = send_append_entries(&addr, &args).await;
+            });
+        }
     }
 }
 

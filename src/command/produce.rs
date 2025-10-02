@@ -2,6 +2,7 @@ use super::Command;
 use crate::broker::Broker;
 use crate::error::BrokerError;
 use crate::protocol::{Message, Request, Response};
+use crate::raft::LogEntry;
 use crate::storage::append_message;
 use async_trait::async_trait;
 use log::{error, info};
@@ -77,6 +78,13 @@ impl Command for ProduceCommand {
             value,
         };
 
+        // Create a Raft log entry
+        let log_entry = LogEntry {
+            term: broker.raft_state.lock().await.current_term,
+            message: message.clone(),
+        };
+        broker.replicate_log_entry(log_entry).await;
+
         // Append to in-memory log
         {
             let mut log = broker.log.lock().await;
@@ -86,28 +94,6 @@ impl Command for ProduceCommand {
         }
         append_message(&broker.data_dir, &topic, partition, &message).await?;
 
-        // Replicate to other brokers
-        let brokers = broker.cluster_brokers.clone();
-        let my_id = broker.my_id;
-        let topic_clone = topic.clone();
-        let message_clone = message.clone();
-
-        // Spawn replication in background
-        tokio::spawn(async move {
-            for (i, addr) in brokers.iter().enumerate() {
-                if i == my_id {
-                    continue; // Don't replicate to self
-                }
-                if let Err(_e) =
-                    replicate_to_peer(addr, &topic_clone, partition, &message_clone).await
-                {
-                    error!("Replication to {} failed", addr);
-                } else {
-                    info!("Replicated message to {}", addr);
-                }
-            }
-        });
-
         Ok(Response {
             status: "ok".to_string(),
             msg: Some(message),
@@ -115,31 +101,4 @@ impl Command for ProduceCommand {
             next_offset: None,
         })
     }
-}
-
-// Helper function to replicate to a peer broker
-async fn replicate_to_peer(
-    addr: &str,
-    topic: &str,
-    partition: u32,
-    message: &Message,
-) -> Result<(), BrokerError> {
-    let mut stream = TcpStream::connect(addr).await?;
-    let req = Request {
-        cmd: "replicate".to_string(),
-        topic: Some(topic.to_string()),
-        partition: Some(partition),
-        msg: None,
-        offset: None,
-        message: Some(message.clone()),
-    };
-    let line = serde_json::to_string(&req)?;
-    stream.write_all(line.as_bytes()).await?;
-    stream.write_all(b"\n").await?;
-
-    // Optional, read the response but do nothing
-    let mut reader = BufReader::new(stream).lines();
-    let _ = reader.next_line().await;
-
-    Ok(())
 }

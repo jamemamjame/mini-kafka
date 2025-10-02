@@ -16,6 +16,7 @@ use crate::storage::load_log;
 use log::{debug, info, warn};
 use std::env;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -117,8 +118,21 @@ async fn main() -> Result<(), BrokerError> {
                     if args.term >= raft.current_term {
                         raft.current_term = args.term;
                         raft.role = RaftRole::Follower;
-                        raft.last_heartbeat = std::time::Instant::now(); // reset
-                        success = true;
+                        raft.last_heartbeat = Instant::now(); // reset
+
+                        // Log consistency check (simplified)
+                        let prev_ok = if args.prev_log_index == 0 {
+                            true
+                        } else {
+                            let idx = args.prev_log_index as usize;
+                            idx < raft.log.len() && raft.log[idx].term == args.prev_log_term
+                        };
+                        if prev_ok {
+                            for entry in args.entries {
+                                raft.log.push(entry);
+                            }
+                            success = true;
+                        }
                     };
                     let reply = AppendEntriesReply {
                         term: raft.current_term,
